@@ -61,47 +61,71 @@ Tanpa build step, tanpa dependency — file statis + 2 Serverless Function.
 
 > Catatan: `SOCIALS` sengaja dikosongin URL-nya biar nggak ada link karangan. Isi link asli owner dulu kalau mau dipakai produksi.
 
-## Cara kerja pencarian (satu sumber: amfinder)
+## Cara kerja pencarian (100% pakai kode amfinder)
 
-Semua logika ada di **`api/find.js`** — file tunggal, tanpa import file lain, biar aman di-deploy ke Vercel.
+Semua logika ada di **`api/find.js`**: isinya kode `amfinder.js` **apa adanya**
+(`BASE`, `UA`, `HEADERS`, `requestSSE`, `getFinalResult`, `amfinder`, `searchPreset`),
+lalu di bagian bawah cuma ditambah pembungkus kecil buat Vercel.
+
+Yang **dibuang** dari file asli cuma bagian demo di paling bawah:
+
+```js
+module.exports = { amfinder, searchPreset }
+(async () => { const { amfinder } = require('./am') ... })()   // <- ini bikin crash
+```
+
+`module.exports` + `require('./am')` nggak bisa jalan di Serverless Function Vercel
+(ESM + nggak ada file `./am`), dan IIFE-nya langsung dieksekusi saat file di-load —
+itu yang bikin function-nya mati sebelum sempat balas JSON.
 
 Alur:
 
 1. Frontend manggil `GET /api/find?url=<link tiktok>`.
-2. Server validasi link-nya (harus `http(s)://` + domain `tiktok.com`), lalu manggil:
+2. Server validasi bentuk link (biar nggak nembak amfinder pakai link kepotong).
+3. `amfinder(link)` dipanggil → request SSE ke:
 
    ```
    GET https://amfinder.web.id/api/find?url=<link tiktok>&bat=80&chg=1
    Accept: text/event-stream
    ```
 
-3. Respon amfinder itu **SSE**. Event `log` diabaikan, cuma event `result` terakhir yang dipakai
-   (kalau suatu saat dia balikin JSON biasa, itu juga tetap kebaca).
-4. Hasilnya dinormalisasi ke bentuk yang dipakai frontend, lalu dikirim sebagai JSON.
+4. Event `log` diabaikan, cuma event `result` terakhir yang dipakai (`getFinalResult`).
+5. Hasilnya dikirim ke browser **apa adanya**, ditambah 3 hal kecil:
+   - `video.src` → `/api/proxy?u=<playUrlNoWm>` biar video bisa diputar
+   - alias `presets` (dari `presetLinks`) buat renderer
+   - `author` ringkas (dari `authorDetail`)
 
-Data yang didapat dari amfinder:
+> Semua kredit API & client: **Melvin** — <https://t.me/luyatiem> · channel <https://t.me/aboutvin7x> · channel WA <https://whatsapp.com/channel/0029VbDlfld4yltRwFKFL73X>.
 
-- metadata video + statistik (views/likes/comments) + `playUrlNoWm`
-- `authorDetail` (username, nickname, bio, avatar)
-- `presetLinks[]` → `type`, `url`, `title`, **`thumb`/`thumbs`**, **`size`**, **`ratio`**, `source`, **`verified`**
-- `scanned` (jumlah komentar/balasan yang dicek) dan `context` (hashtag yang match)
+### Bonus: cari pakai kata kunci
 
-> Kredit: API & client aslinya karya **Melvin** — <https://t.me/luyatiem> · channel <https://t.me/aboutvin7x> · channel WA <https://whatsapp.com/channel/0029VbDlfld4yltRwFKFL73X>.
+Karena `searchPreset()` dari file kamu ikut kebawa, endpoint yang sama juga bisa
+dipanggil pakai `?q=`:
 
-Response ke browser selalu bentuk ini:
-
-```json
-{ "ok": true, "videoId": "...", "video": {...}, "author": {...},
-  "scanned": { "comments": 74, "replies": 0 },
-  "presets": [ { "type": "5mb", "url": "...", "title": "...", "thumb": "...",
-                 "size": "...", "ratio": "4:5", "source": "description",
-                 "verified": true, "byAuthor": true } ],
-  "engine": "amfinder" }
+```
+GET /api/find?q=jjslow
 ```
 
-Kalau gagal, tetap JSON (bukan HTML) dengan `ok: false` + `error` berbahasa Indonesia, contoh:
-`{"ok": false, "error": "Itu bukan link TikTok yang lengkap. Contoh yang bener: https://vt.tiktok.com/xxxx"}`.
-Jadi frontend pasti nampilin pesan yang jelas, bukan "Server ngasih respon aneh".
+Hasilnya `{ ok, query, total, items[], presets[] }` (list video kandidat dari amfinder).
+
+### Bentuk response
+
+```json
+{ "ok": true, "found": true, "engine": "amfinder", "videoId": "...",
+  "videoUrl": "...",
+  "video": { "id": "...", "description": "...", "cover": "...",
+             "stats": { "views": 263274, "likes": 28977, "comments": 171, "shares": 1110 },
+             "playUrlNoWm": "...", "src": "/api/proxy?u=..." },
+  "authorDetail": { "uniqueId": "mannnzx_5mb", "nickname": "...", "bio": "...", "avatar": "..." },
+  "presetLinks": [ { "type": "5mb", "url": "...", "title": "...", "thumb": "...",
+                     "size": "...", "ratio": "4:5", "source": "description", "verified": true } ],
+  "otherLinks": [ ... ],
+  "scanned": { "comments": 74, "replies": 0 },
+  "presets": [ ... ] }
+```
+
+Kalau gagal, tetap JSON (nggak pernah HTML), contoh:
+`{"ok": false, "error": "Itu bukan link TikTok yang lengkap. Contoh: https://vt.tiktok.com/xxxx"}`
 
 ## Endpoint
 

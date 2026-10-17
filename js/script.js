@@ -89,11 +89,18 @@ async function search() {
   busy = true; u.blur(); openLoader()
   out.innerHTML = '<div class="card empty"><span class="ic"><span class="dot live"></span></span><h3>Lagi ngecek videonya…</h3><p>Deskripsi, bio, komentar, sama balasan lagi dicek satu-satu. Bisa sampai setengah menit, sabar ya.</p></div>'
   try {
-    const r = await fetch('/api/find?url=' + encodeURIComponent(v)), t = await r.text(); let j
-    try { j = JSON.parse(t) } catch { throw new Error(r.status === 404 || /not found/i.test(t) ? 'Server-nya belum nemu /api/find. Pastikan project di-deploy ke Vercel lengkap sama folder api/-nya ya.' : 'Server ngasih respon nggak valid (HTTP ' + r.status + '). Coba refresh, kalau masih gagal cek log function di Vercel ya.') }
+    let r, t
+    try { r = await fetch('/api/find?url=' + encodeURIComponent(v)); t = await r.text() }
+    catch { throw new Error('Nggak bisa nyambung ke server. Cek koneksi, lalu coba lagi ya.') }
+    let j
+    try { j = JSON.parse(t) } catch {
+      if (r.status === 404 || /not found/i.test(t)) throw new Error('Function /api/find nggak ketemu. Pastiin folder api/ ikut ke-deploy ya.')
+      if (r.status === 504) throw new Error('Server kelamaan nyari preset (timeout). Coba lagi ya.')
+      throw new Error('Respon server nggak valid (HTTP ' + r.status + '). Coba lagi sebentar ya.')
+    }
     if (!j.ok) throw new Error(j.error || 'Ada yang error, coba lagi ya')
     links = renderResponse(j, { out, rv }); history.replaceState(null, '', '?url=' + encodeURIComponent(v))
-    if (j.presets.length) endLoader('ok', null, () => { setNav('hasil'); go('#hasil') })
+    if (links.length) endLoader('ok', null, () => { setNav('hasil'); go('#hasil') })
     else { toast('Yah, presetnya nggak ketemu', 1); endLoader('err', 'Preset nggak ketemu') }
   } catch (e) {
     out.innerHTML = '<div class="card empty"><span class="ic err"><svg width="26" height="26"><use href="#i-info"/></svg></span><h3>Yah, gagal</h3><p class="err">' + esc(e.message) + '</p></div>'
