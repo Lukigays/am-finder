@@ -61,22 +61,15 @@ Tanpa build step, tanpa dependency — file statis + 2 Serverless Function.
 
 > Catatan: `SOCIALS` sengaja dikosongin URL-nya biar nggak ada link karangan. Isi link asli owner dulu kalau mau dipakai produksi.
 
-## Cara kerja pencarian (100% pakai kode amfinder)
+## Cara kerja pencarian
 
-Semua logika ada di **`api/find.js`**: isinya kode `amfinder.js` **apa adanya**
-(`BASE`, `UA`, `HEADERS`, `requestSSE`, `getFinalResult`, `amfinder`, `searchPreset`),
-lalu di bagian bawah cuma ditambah pembungkus kecil buat Vercel.
+Semua logika ada di **`api/find.js`** (`BASE`, `UA`, `HEADERS`, `requestSSE`,
+`getFinalResult`, `amfinder`, `searchPreset`) plus pembungkus kecil buat Vercel.
 
-Yang **dibuang** dari file asli cuma bagian demo di paling bawah:
-
-```js
-module.exports = { amfinder, searchPreset }
-(async () => { const { amfinder } = require('./am') ... })()   // <- ini bikin crash
-```
-
-`module.exports` + `require('./am')` nggak bisa jalan di Serverless Function Vercel
-(ESM + nggak ada file `./am`), dan IIFE-nya langsung dieksekusi saat file di-load —
-itu yang bikin function-nya mati sebelum sempat balas JSON.
+> Catatan teknis: fungsi `amfinder()` itu **nama endpoint** yang dipanggil
+> (`https://amfinder.web.id/api/find`), bukan nama orang. Nama file/ API-nya
+> sengaja dibiarkan apa adanya biar cocok sama dokumentasi endpoint-nya.
+> Author project ini: **Lukyy**.
 
 Alur:
 
@@ -95,7 +88,22 @@ Alur:
    - alias `presets` (dari `presetLinks`) buat renderer
    - `author` ringkas (dari `authorDetail`)
 
-> Semua kredit API & client: **Melvin** — <https://t.me/luyatiem> · channel <https://t.me/aboutvin7x> · channel WA <https://whatsapp.com/channel/0029VbDlfld4yltRwFKFL73X>.
+> Kode by **Lukyy** — GitHub <https://github.com/Lukigays> · TikTok <https://www.tiktok.com/@user24102008777> · Instagram <https://www.instagram.com/_24lukyy> · Saluran WhatsApp <https://whatsapp.com/channel/0029VbB9vRs2UPBANLLA2o0p>.
+
+### Jalur cadangan (kalau function gagal)
+
+Di `vercel.json` ada rewrite:
+
+```json
+{ "source": "/api/live", "destination": "https://amfinder.web.id/api/find" }
+```
+
+Artinya `/api/live?url=...` diteruskan **langsung** ke amfinder oleh Vercel (tanpa
+serverless function). Frontend otomatis pindah ke jalur ini kalau `/api/find`
+balikin 404 / HTML / bukan JSON — stream SSE-nya diparse di browser.
+
+Ada juga `GET /api/ping` buat tes cepat: kalau balikin `{"ok":true,"build":"1.4.1"}`
+berarti function hidup. Detail troubleshooting ada di **`DEPLOY.md`**.
 
 ### Bonus: cari pakai kata kunci
 
@@ -151,4 +159,4 @@ https://<domain-kamu>/api/find?url=https://www.tiktok.com/@mannnzx_5mb/video/746
 - **Tanpa dependency.** `fetch` + Web API di Node runtime Vercel (Node 20+). Batas waktu fungsi 60 detik lewat `vercel.json`.
 - **Timeout ke amfinder** diset 45 detik, dan semua error ditangkap → fungsi nggak pernah crash jadi HTML.
 - **Video.** `playUrlNoWm` dari TikTok CDN nggak bisa diputar langsung di browser (butuh header Referer), jadi diputer lewat `/api/proxy`. Kalau gagal, frontend otomatis fallback ke tombol "Buka di TikTok".
-- **Kredit.** Frontend hasil remake dari project developer sebelumnya (**@Izz / RazeerhDev**), mesin pencarian memakai **amfinder** karya **Melvin**. Semua kredit tetap milik pembuat aslinya — jangan dianggap project resmi dari mereka.
+- **Author.** Lukyy — GitHub [Lukigays](https://github.com/Lukigays), TikTok [@user24102008777](https://www.tiktok.com/@user24102008777), Instagram [_24lukyy](https://www.instagram.com/_24lukyy), Saluran WhatsApp [ikuti di sini](https://whatsapp.com/channel/0029VbB9vRs2UPBANLLA2o0p).

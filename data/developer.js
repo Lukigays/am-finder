@@ -5,9 +5,9 @@ export const developer = {
   name: 'Lukyy',
   verified: true,
   image: 'assets/dev.png',
-  description: 'Independent developer, Solo developer, and Self-Employed developer.',
+  description: 'Solo developer & vibecoder. Bikin tools simpel yang kepake buat banyak orang.',
   links: [SOCIALS.tiktok, SOCIALS.instagram, SOCIALS.whatsappOwner, SOCIALS.github],
-  quote: 'Bikin tools yang simpel, kepake buat banyak orang.',
+  quote: 'Kode by Lukyy — kalau bermanfaat, tinggal pakai.',
   quoteLabel: 'Kata-kata dari saya'
 }
 

@@ -5,10 +5,20 @@
   "functions": {
     "api/find.js": { "maxDuration": 60, "memory": 1024 }
   },
+  "rewrites": [
+    {
+      "source": "/api/live",
+      "destination": "https://amfinder.web.id/api/find"
+    }
+  ],
   "headers": [
     {
       "source": "/assets/(.*)",
       "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+    },
+    {
+      "source": "/api/live",
+      "headers": [{ "key": "Cache-Control", "value": "no-store" }]
     }
   ]
 }

@@ -1,10 +1,13 @@
 /**
- * Judul : Finder Preset AM
- * Base URL : https://amfinder.web.id
- * Author : Melvin - t.me/luyatiem
- * Deskripsi : Mencari preset Alight Motion melalui URL TikTok atau kata kunci
- * Channel : https://t.me/aboutvin7x
- * Channel WhatsApp : https://whatsapp.com/channel/0029VbDlfld4yltRwFKFL73X
+ * Judul : Lukyy Preset Finder
+ * Author : Lukyy
+ * GitHub : https://github.com/Lukigays
+ * TikTok : https://www.tiktok.com/@user24102008777
+ * Instagram : https://www.instagram.com/_24lukyy
+ * Saluran WhatsApp : https://whatsapp.com/channel/0029VbB9vRs2UPBANLLA2o0p
+ *
+ * Deskripsi : Mencari preset Alight Motion melalui URL TikTok atau kata kunci.
+ * Base URL : https://amfinder.web.id (endpoint publik yang dipakai buat nyari)
  */
 
 'use strict'

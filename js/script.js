@@ -81,29 +81,110 @@ function endLoader(st, label, done) {
   }, rm ? 500 : 1300)
 }
 
-/* ---------- search (API: /api/find?url=...) ---------- */
+/* ---------- search: /api/find -> /api/live (rewrite) -> error jelas ---------- */
+
+// baca balasan SSE langsung di browser (dipakai kalau lewat jalur /api/live)
+function parseSSE(raw) {
+  const out = []
+  for (const block of String(raw || '').split(/\r?\n\r?\n/)) {
+    let ev = 'message'
+    const lines = []
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith('event:')) ev = line.slice(6).trim()
+      else if (line.startsWith('data:')) lines.push(line.slice(5).trim())
+    }
+    if (!lines.length) continue
+    const txt = lines.join('\n')
+    let data
+    try { data = JSON.parse(txt) } catch { data = txt }
+    out.push({ event: ev, data })
+  }
+  for (let i = out.length - 1; i >= 0; i--) {
+    const d = out[i].data
+    if (d && typeof d === 'object' && 'ok' in d) return d
+  }
+  return null
+}
+
+// jalur 1: serverless function punya kita (paling lengkap: video lewat /api/proxy)
+async function viaFunction(v) {
+  let r
+  try { r = await fetch('/api/find?url=' + encodeURIComponent(v), { headers: { accept: 'application/json' } }) }
+  catch { return { ok: false, net: true, error: 'Nggak bisa nyambung ke server.' } }
+  const t = await r.text()
+  let j = null
+  try { j = JSON.parse(t) } catch { /* bukan JSON */ }
+  if (j) return j
+
+  // deployment dikunci Vercel Authentication? (302 -> vercel.com/sso-api, body HTML)
+  const sso = r.redirected && /vercel\.com\/sso|_vercel\/sso/i.test(r.url)
+  if (sso || /Vercel Authentication|sso-api|Deployment Protection/i.test(t)) {
+    return {
+      ok: false,
+      protected: true,
+      error: 'Deployment ini dikunci Vercel Authentication (semua request dialihin ke halaman login Vercel).'
+    }
+  }
+
+  return {
+    ok: false,
+    broken: true,
+    status: r.status,
+    error: r.status === 404 || /not found/i.test(t)
+      ? 'Function /api/find nggak ketemu (404).'
+      : 'Function /api/find balikin HTML (HTTP ' + r.status + '), bukan JSON.'
+  }
+}
+
+// jalur 2: rewrite /api/live -> amfinder.web.id (nggak butuh function sama sekali)
+async function viaRewrite(v) {
+  let r
+  try { r = await fetch('/api/live?url=' + encodeURIComponent(v) + '&bat=80&chg=1', { headers: { accept: 'text/event-stream' } }) }
+  catch { return { ok: false, error: 'rewrite /api/live nggak bisa diakses.' } }
+  const t = await r.text()
+  if (!r.ok) return { ok: false, error: 'rewrite /api/live HTTP ' + r.status + '.' }
+  const res = parseSSE(t)
+  if (!res) return { ok: false, error: 'rewrite /api/live nggak ngasih hasil.' }
+  if (res.ok === false) return { ok: false, error: res.message || res.error || 'amfinder nolak link ini.' }
+  return res
+}
+
 async function search() {
   if (busy) return
   const v = u.value.trim()
   if (!v) { const f = $('.field'); f.classList.remove('sh'); void f.offsetWidth; f.classList.add('sh'); return u.focus() }
   busy = true; u.blur(); openLoader()
   out.innerHTML = '<div class="card empty"><span class="ic"><span class="dot live"></span></span><h3>Lagi ngecek videonya…</h3><p>Deskripsi, bio, komentar, sama balasan lagi dicek satu-satu. Bisa sampai setengah menit, sabar ya.</p></div>'
+  const why = []
   try {
-    let r, t
-    try { r = await fetch('/api/find?url=' + encodeURIComponent(v)); t = await r.text() }
-    catch { throw new Error('Nggak bisa nyambung ke server. Cek koneksi, lalu coba lagi ya.') }
-    let j
-    try { j = JSON.parse(t) } catch {
-      if (r.status === 404 || /not found/i.test(t)) throw new Error('Function /api/find nggak ketemu. Pastiin folder api/ ikut ke-deploy ya.')
-      if (r.status === 504) throw new Error('Server kelamaan nyari preset (timeout). Coba lagi ya.')
-      throw new Error('Respon server nggak valid (HTTP ' + r.status + '). Coba lagi sebentar ya.')
+    let j = await viaFunction(v)
+
+    // function-nya bermasalah (404 / HTML / bukan JSON) -> coba jalur rewrite
+    if (!j.ok && j.broken) {
+      why.push(j.error)
+      j = await viaRewrite(v)
     }
-    if (!j.ok) throw new Error(j.error || 'Ada yang error, coba lagi ya')
-    links = renderResponse(j, { out, rv }); history.replaceState(null, '', '?url=' + encodeURIComponent(v))
+    if (!j.ok && j.net) {
+      why.push(j.error)
+      j = await viaRewrite(v)
+    }
+
+    if (j.protected) {
+      out.innerHTML = `<div class="card empty"><span class="ic err"><svg width="26" height="26"><use href="#i-warn"/></svg></span><h3>Deployment masih dikunci</h3><p class="err">Semua request (termasuk <b>/api/find</b>) dialihin ke halaman login Vercel, jadi server balikin HTML — bukan JSON. Ini settingan Vercel, bukan kode.</p><div style="text-align:left;margin-top:16px;font-size:13px;line-height:1.7"><b>Matikan begini:</b><br>1. Buka Vercel → project ini → <b>Settings</b><br>2. Menu <b>Deployment Protection</b><br>3. Bagian <b>Vercel Authentication</b> → pilih <b>Standard Protection</b> (cuma preview yang dikunci) atau <b>Disabled</b><br>4. Klik <b>Save</b>, tunggu ±10 detik, refresh halaman ini</div><p style="margin-top:14px;font-size:12px;opacity:.75">Buka domain dari menu <b>Domains</b> di project, bukan URL preview yang ada kode acaknya.</p></div>`
+      endLoader('err', 'Deployment dikunci')
+      return
+    }
+    if (!j.ok) {
+      const msg = [j.error, ...why].filter(Boolean).join(' ')
+      throw new Error(msg || 'Ada yang error, coba lagi ya')
+    }
+
+    links = renderResponse(j, { out, rv })
+    history.replaceState(null, '', '?url=' + encodeURIComponent(v))
     if (links.length) endLoader('ok', null, () => { setNav('hasil'); go('#hasil') })
     else { toast('Yah, presetnya nggak ketemu', 1); endLoader('err', 'Preset nggak ketemu') }
   } catch (e) {
-    out.innerHTML = '<div class="card empty"><span class="ic err"><svg width="26" height="26"><use href="#i-info"/></svg></span><h3>Yah, gagal</h3><p class="err">' + esc(e.message) + '</p></div>'
+    out.innerHTML = '<div class="card empty"><span class="ic err"><svg width="26" height="26"><use href="#i-info"/></svg></span><h3>Yah, gagal</h3><p class="err">' + esc(e.message) + '</p><p style="margin-top:10px;font-size:12px;opacity:.75">Cek juga: <b>/api/ping</b> di domain ini. Kalau kosong/404 berarti folder <b>api/</b> belum ikut ke-deploy.</p></div>'
     toast(e.message, 1); endLoader('err', 'Gagal nyari preset')
   }
 }
