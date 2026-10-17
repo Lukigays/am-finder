@@ -1,57 +1,65 @@
 /**
  * GET /api/find?url=<link TikTok>
  *
- * Orkestrator pencarian preset Alight Motion:
+ * Satu-satunya sumber pencarian: API amfinder.
+ *   Base URL : https://amfinder.web.id
+ *   Author   : Melvin — t.me/luyatiem
+ *   Channel  : https://t.me/aboutvin7x
+ *   Channel WA: https://whatsapp.com/channel/0029VbDlfld4yltRwFKFL73X
  *
- *   1. MESIN UTAMA  -> amfinder.web.id (basis data + verifikasi preset)
- *      Sumber: versi Node dari amfinder.js (author: Melvin — t.me/luyatiem,
- *      channel t.me/aboutvin7x). Endpoint-nya streaming SSE, jadi event
- *      "log" diabaikan dan cuma event "result" terakhir yang dipakai.
- *
- *   2. FALLBACK     -> lib/scanner.js (scanner mandiri: TikTok + komentar,
- *      link preset di-resolve sendiri). Dipakai kalau mesin utama error,
- *      timeout, atau nggak nemu apa-apa.
- *
- * Response akhir selalu pakai kontrak internal frontend:
+ * Endpoint-nya streaming SSE (event: log / event: result). Yang dipakai cuma
+ * event "result" terakhir, lalu dinormalisasi ke bentuk yang dipakai frontend:
  * { ok, videoId, video, author, scanned, presets }
+ *
+ * File ini sengaja berdiri sendiri (tanpa import file lain) biar aman di-deploy
+ * ke Vercel, dan SELALU balikin JSON (nggak pernah HTML), supaya frontend nggak
+ * kena "Server ngasih respon aneh".
  */
 
-export const config = { maxDuration: 60 }
-
-import { scanByTikwm, enrichPresets } from '../lib/scanner.js'
-
-const AMFINDER = 'https://amfinder.web.id'
-const UA_MAIN = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36'
-const BUDGET = 46000 // ms, biar fungsi selalu jawab sebelum fungsi ke-timeout
+const BASE = 'https://amfinder.web.id'
+const UA = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36'
+const HEADERS = {
+  Accept: 'text/event-stream',
+  'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+  Referer: `${BASE}/`,
+  'User-Agent': UA
+}
+const TIMEOUT = 45000
 
 const json = (o, s = 200) => new Response(JSON.stringify(o), {
   status: s,
   headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }
 })
 
-/* ------------------------------ mesin utama ------------------------------ */
+/* -------------------------------- SSE client ------------------------------- */
 
-async function readSSE(response) {
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  if (!response.body) throw new Error('Response stream tidak tersedia')
+async function requestSSE(url) {
+  const response = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(TIMEOUT) })
+  if (!response.ok) throw new Error(`amfinder balikin HTTP ${response.status}`)
+  if (!response.body) throw new Error('response stream nggak tersedia')
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  const events = []
+  // jaga-jaga kalau suatu saat amfinder balikin JSON biasa, bukan SSE
+  const type = response.headers.get('content-type') || ''
+  if (/application\/json/i.test(type)) {
+    const raw = await response.text()
+    try { return [{ event: 'result', data: JSON.parse(raw) }] } catch { throw new Error('respon amfinder bukan JSON yang valid') }
+  }
+
+  const reader = response.body.getReader(), decoder = new TextDecoder(), events = []
   let buffer = ''
 
   const parseBlock = block => {
     let event = 'message'
-    const data = []
+    const lines = []
     for (const line of block.split(/\r?\n/)) {
       if (line.startsWith('event:')) event = line.slice(6).trim()
-      else if (line.startsWith('data:')) data.push(line.slice(5).trim())
+      else if (line.startsWith('data:')) lines.push(line.slice(5).trim())
     }
-    if (!data.length) return
-    const raw = data.join('\n')
-    let value
-    try { value = JSON.parse(raw) } catch { value = raw }
-    events.push({ event, data: value })
+    if (!lines.length) return
+    const raw = lines.join('\n')
+    let data
+    try { data = JSON.parse(raw) } catch { data = raw }
+    events.push({ event, data })
   }
 
   try {
@@ -71,47 +79,33 @@ async function readSSE(response) {
   return events
 }
 
-// ambil event "result" terakhir (bisa juga datang sebagai JSON biasa)
-function finalResult(events) {
+function getFinalResult(events) {
   for (let i = events.length - 1; i >= 0; i--) {
-    const d = events[i].data
-    if (d && typeof d === 'object' && 'ok' in d) return d
+    const data = events[i].data
+    if (data && typeof data === 'object' && 'ok' in data) return data
   }
   return null
 }
 
-async function amfinder(url) {
-  const ac = new AbortController()
-  const t = setTimeout(() => ac.abort(), 28000)
-  try {
-    const qs = new URLSearchParams({ url, bat: '80', chg: '1' })
-    const r = await fetch(`${AMFINDER}/api/find?${qs}`, {
-      headers: {
-        accept: 'text/event-stream',
-        'accept-language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-        referer: `${AMFINDER}/`,
-        'user-agent': UA_MAIN
-      },
-      signal: ac.signal
-    })
-    return finalResult(await readSSE(r))
-  } finally { clearTimeout(t) }
+async function amfinder(targetUrl) {
+  const events = await requestSSE(`${BASE}/api/find?url=${encodeURIComponent(targetUrl)}&bat=80&chg=1`)
+  return getFinalResult(events)
 }
 
-/* ------------------------------ normalisasi ------------------------------ */
+/* ------------------------------ normalisasi -------------------------------- */
 
-const source = s => (['description', 'bio', 'bioLink', 'comment'].includes(s) ? s : 'comment')
-
-// file Drive nggak dikasih thumbnail sama mesin utama -> bikin sendiri dari file id-nya
+// file Drive nggak dikasih thumbnail sama amfinder -> bikin sendiri dari file id-nya
 const driveId = u => (String(u).match(/\/file\/d\/([-\w]{10,})/) || String(u).match(/[?&]id=([-\w]{10,})/) || [])[1] || ''
 const driveThumb = id => (id ? `https://drive.google.com/thumbnail?id=${id}&sz=w640` : '')
+
+const source = s => (['description', 'bio', 'bioLink', 'comment'].includes(s) ? s : 'comment')
 
 function normalize(raw, url) {
   const v = raw.video || {}
   const a = raw.authorDetail || {}
+  const stats = v.stats || {}
   const links = Array.isArray(raw.presetLinks) ? raw.presetLinks : []
 
-  const stats = v.stats || {}
   const video = {
     id: v.id || raw.videoId || '',
     url: v.url || raw.videoUrl || url,
@@ -128,6 +122,7 @@ function normalize(raw, url) {
 
   const play = v.playUrlNoWm || v.playUrl || ''
   if (play) {
+    // video TikTok CDN butuh header Referer, jadi diputer lewat proxy sendiri
     video.src = '/api/proxy?u=' + encodeURIComponent(play)
     video.proxy = video.src
     video.srcFrom = 'amfinder → tiktok-cdn (via proxy)'
@@ -148,7 +143,7 @@ function normalize(raw, url) {
       detail: ''
     }))
 
-  const scannedRaw = raw.scanned || {}
+  const scanned = raw.scanned || {}
   return {
     ok: true,
     videoId: raw.videoId || video.id,
@@ -161,50 +156,42 @@ function normalize(raw, url) {
       bioLink: a.bioLink || ''
     },
     scanned: {
-      comments: Number(scannedRaw.comments) || 0,
-      replies: Number(scannedRaw.replies) || 0
+      comments: Number(scanned.comments) || 0,
+      replies: Number(scanned.replies) || 0
     },
     presets,
     engine: 'amfinder'
   }
 }
 
-/* -------------------------------- handler -------------------------------- */
+/* --------------------------------- handler -------------------------------- */
 
 export default async function handler(request) {
-  const t0 = Date.now()
-  const url = (new URL(request.url).searchParams.get('url') || '').trim()
-  if (!url) return json({ ok: false, error: 'Link TikTok-nya belum diisi.' }, 400)
-
-  let mainErr = ''
-
-  /* 1. mesin utama */
   try {
-    const raw = await amfinder(url)
-    if (raw && raw.ok) {
-      const out = normalize(raw, url)
-      if (out.presets.length) return json(out)
-      mainErr = 'preset nggak ketemu di mesin utama'
-    } else if (raw && raw.message) {
-      mainErr = raw.message
-    } else {
-      mainErr = 'mesin utama nggak ngasih hasil'
+    const url = (new URL(request.url).searchParams.get('url') || '').trim()
+
+    if (!url) return json({ ok: false, error: 'Link TikTok-nya belum diisi.' })
+
+    if (!/^https?:\/\//i.test(url)) {
+      return json({ ok: false, error: 'Link-nya harus diawali https:// ya. Contoh: https://vt.tiktok.com/xxxx' })
     }
-  } catch (e) {
-    mainErr = e?.name === 'AbortError' ? 'mesin utama timeout' : (e?.message || 'mesin utama error')
-  }
 
-  /* 2. fallback: scanner mandiri */
-  const left = Math.max(8000, BUDGET - (Date.now() - t0))
-  try {
-    const out = await scanByTikwm(url, { budgetMs: left })
-    return json({ ...out, engine: 'scanner', fallbackFrom: mainErr })
+    let host = ''
+    try { host = new URL(url).hostname.toLowerCase() } catch { /* urusan validasi di bawah */ }
+    if (!/(^|\.)tiktok\.com$/i.test(host)) {
+      return json({ ok: false, error: 'Itu bukan link TikTok yang lengkap. Contoh yang bener: https://vt.tiktok.com/xxxx atau https://www.tiktok.com/@user/video/123' })
+    }
+
+    const result = await amfinder(url)
+
+    if (!result) return json({ ok: false, error: 'amfinder nggak ngasih hasil akhir. Coba lagi sebentar ya.' })
+    if (!result.ok) return json({ ok: false, error: result.message || 'amfinder nolak link ini.' })
+
+    return json(normalize(result, url))
   } catch (e) {
-    return json({
-      ok: false,
-      error: `Preset nggak ketemu. Mesin utama: ${mainErr}. Scanner cadangan: ${String(e?.message || 'error').replace(/\.+$/, '')}.`
-    }, 502)
+    const msg = e?.name === 'TimeoutError' || e?.name === 'AbortError'
+      ? 'amfinder kelamaan jawab (timeout). Coba lagi ya.'
+      : (e?.message || 'error nggak diketahui')
+    return json({ ok: false, error: 'Gagal nyambung ke mesin pencari: ' + msg })
   }
 }
-
-export { enrichPresets }

@@ -20,10 +20,8 @@ lukyy/
 │   ├── developer.js      # halaman Developer (nama, foto, quote, sosial)
 │   └── response.js       # renderer hasil pencarian
 ├── api/
-│   ├── find.js           # GET /api/find?url=...  (orkestrator pencarian)
+│   ├── find.js           # GET /api/find?url=...  (semua logika pencarian ada di sini)
 │   └── proxy.js          # proxy video/gambar TikTok (biar bisa diputar/dimuat di web)
-├── lib/
-│   └── scanner.js        # scanner mandiri (fallback) — TikTok + komentar
 ├── assets/               # logo Alight Motion, foto dev, og-image
 ├── vercel.json           # konfigurasi Vercel (maxDuration, cache, cleanUrls)
 └── package.json
@@ -63,43 +61,34 @@ Tanpa build step, tanpa dependency — file statis + 2 Serverless Function.
 
 > Catatan: `SOCIALS` sengaja dikosongin URL-nya biar nggak ada link karangan. Isi link asli owner dulu kalau mau dipakai produksi.
 
-## Dua mesin pencarian
+## Cara kerja pencarian (satu sumber: amfinder)
 
-`api/find.js` itu orkestrator. Urutannya:
+Semua logika ada di **`api/find.js`** — file tunggal, tanpa import file lain, biar aman di-deploy ke Vercel.
 
-### 1. Mesin utama — `amfinder.web.id`
+Alur:
 
-Dipanggil ke:
+1. Frontend manggil `GET /api/find?url=<link tiktok>`.
+2. Server validasi link-nya (harus `http(s)://` + domain `tiktok.com`), lalu manggil:
 
-```
-GET https://amfinder.web.id/api/find?url=<link tiktok>&bat=80&chg=1
-Accept: text/event-stream
-```
+   ```
+   GET https://amfinder.web.id/api/find?url=<link tiktok>&bat=80&chg=1
+   Accept: text/event-stream
+   ```
 
-Endpoint-nya streaming **SSE**. Event `log` diabaikan, yang dipakai cuma event `result` terakhir (bisa juga datang sebagai JSON biasa). Datanya paling lengkap:
+3. Respon amfinder itu **SSE**. Event `log` diabaikan, cuma event `result` terakhir yang dipakai
+   (kalau suatu saat dia balikin JSON biasa, itu juga tetap kebaca).
+4. Hasilnya dinormalisasi ke bentuk yang dipakai frontend, lalu dikirim sebagai JSON.
 
-- metadata video + statistik (views/likes/comments/shares) + `playUrlNoWm`
+Data yang didapat dari amfinder:
+
+- metadata video + statistik (views/likes/comments) + `playUrlNoWm`
 - `authorDetail` (username, nickname, bio, avatar)
 - `presetLinks[]` → `type`, `url`, `title`, **`thumb`/`thumbs`**, **`size`**, **`ratio`**, `source`, **`verified`**
-- `scanned` (deskripsi/bio/bioLink/comments/replies) dan `context` (hashtag yang match)
+- `scanned` (jumlah komentar/balasan yang dicek) dan `context` (hashtag yang match)
 
-Hasilnya dinormalisasi ke kontrak internal frontend (`api/find` -> `data/response.js`), lalu dikirim ke browser.
+> Kredit: API & client aslinya karya **Melvin** — <https://t.me/luyatiem> · channel <https://t.me/aboutvin7x> · channel WA <https://whatsapp.com/channel/0029VbDlfld4yltRwFKFL73X>.
 
-> Kredit: API & client aslinya karya **Melvin** — <https://t.me/luyatiem> · channel <https://t.me/aboutvin7x>.
-
-### 2. Fallback — `lib/scanner.js`
-
-Kalau mesin utama error/timeout/nggak nemu preset, scanner mandiri jalan sendiri:
-
-1. Link TikTok dinormalkan (link pendek `vt.tiktok.com` di-resolve dulu).
-2. Metadata video diambil (deskripsi, cover, statistik, author, bio).
-3. Komentar diambil per halaman (cursor) — maks. ±175 komentar + balasan dari thread teramai, dengan batas waktu supaya fungsi nggak timeout.
-4. Semua teks (deskripsi, bio, link bio, komentar, balasan) di-scan pakai pola link:
-   - **5MB** → `alightcreative.com`, `alight.link`, `alight.motion`
-   - **XML** → Google Drive, MediaFire, Mega, Dropbox, sfile, pixeldrain, dll + file `.xml/.zip/.rar`.
-5. Link 5MB & file Drive dibuka halaman detailnya buat ambil **nama preset + ukuran MB**.
-
-Response akhir selalu bentuk yang sama:
+Response ke browser selalu bentuk ini:
 
 ```json
 { "ok": true, "videoId": "...", "video": {...}, "author": {...},
@@ -110,19 +99,32 @@ Response akhir selalu bentuk yang sama:
   "engine": "amfinder" }
 ```
 
-`engine` = `amfinder` | `scanner`. Kalau fallback dipakai, ada field tambahan `fallbackFrom` berisi alasan mesin utama gagal.
+Kalau gagal, tetap JSON (bukan HTML) dengan `ok: false` + `error` berbahasa Indonesia, contoh:
+`{"ok": false, "error": "Itu bukan link TikTok yang lengkap. Contoh yang bener: https://vt.tiktok.com/xxxx"}`.
+Jadi frontend pasti nampilin pesan yang jelas, bukan "Server ngasih respon aneh".
 
 ## Endpoint
 
 | Endpoint | Keterangan |
 |---|---|
-| `GET /api/find?url=<link tiktok>` | Cari preset dari satu video (mesin utama + fallback). Response: JSON di atas. |
+| `GET /api/find?url=<link tiktok>` | Cari preset dari satu video lewat API amfinder. Response: JSON di atas. |
 | `GET /api/proxy?u=<url gambar/video>` | Nerusin byte dari host yang di-whitelist (TikTok CDN, Firebase Storage, dll). |
+
+## Cek cepat kalau ada error
+
+Buka langsung di browser (ganti linknya):
+
+```
+https://<domain-kamu>/api/find?url=https://www.tiktok.com/@mannnzx_5mb/video/7463965556438306054
+```
+
+- Kalau muncul JSON berisi `presets` → aman.
+- Kalau muncul halaman error Vercel / HTML → buka **Vercel → Project → Deployments → Functions → `api/find`** buat lihat log-nya.
+- Link yang dipotong (mis. `https://vt.tikt`) sekarang dibalas pesan: *"Itu bukan link TikTok yang lengkap..."*.
 
 ## Catatan teknis
 
 - **Tanpa dependency.** `fetch` + Web API di Node runtime Vercel (Node 20+). Batas waktu fungsi 60 detik lewat `vercel.json`.
-- **Antrean request.** API publik `tikwm` (dipakai fallback) membatasi 1 request/detik, jadi semua panggilannya lewat satu antrean berjeda ~1,1 detik + retry kalau kena limit.
-- **Kalau preset kosong.** Coba lagi beberapa detik kemudian — sumber pihak ketiga kadang nge-limit. Link preset Alight Motion juga sering cuma nongol di **balasan komentar**, makanya fallback ikut ngintip balasan thread paling rame.
+- **Timeout ke amfinder** diset 45 detik, dan semua error ditangkap → fungsi nggak pernah crash jadi HTML.
 - **Video.** `playUrlNoWm` dari TikTok CDN nggak bisa diputar langsung di browser (butuh header Referer), jadi diputer lewat `/api/proxy`. Kalau gagal, frontend otomatis fallback ke tombol "Buka di TikTok".
 - **Kredit.** Frontend hasil remake dari project developer sebelumnya (**@Izz / RazeerhDev**), mesin pencarian memakai **amfinder** karya **Melvin**. Semua kredit tetap milik pembuat aslinya — jangan dianggap project resmi dari mereka.

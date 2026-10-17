@@ -90,7 +90,7 @@ async function search() {
   out.innerHTML = '<div class="card empty"><span class="ic"><span class="dot live"></span></span><h3>Lagi ngecek videonya…</h3><p>Deskripsi, bio, komentar, sama balasan lagi dicek satu-satu. Bisa sampai setengah menit, sabar ya.</p></div>'
   try {
     const r = await fetch('/api/find?url=' + encodeURIComponent(v)), t = await r.text(); let j
-    try { j = JSON.parse(t) } catch { throw new Error(r.status === 404 || /not found/i.test(t) ? 'Server-nya belum nemu /api/find. Pastikan project di-deploy ke Vercel lengkap sama folder api/-nya ya.' : 'Server ngasih respon aneh, coba lagi ya') }
+    try { j = JSON.parse(t) } catch { throw new Error(r.status === 404 || /not found/i.test(t) ? 'Server-nya belum nemu /api/find. Pastikan project di-deploy ke Vercel lengkap sama folder api/-nya ya.' : 'Server ngasih respon nggak valid (HTTP ' + r.status + '). Coba refresh, kalau masih gagal cek log function di Vercel ya.') }
     if (!j.ok) throw new Error(j.error || 'Ada yang error, coba lagi ya')
     links = renderResponse(j, { out, rv }); history.replaceState(null, '', '?url=' + encodeURIComponent(v))
     if (j.presets.length) endLoader('ok', null, () => { setNav('hasil'); go('#hasil') })
