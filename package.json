@@ -1,0 +1,12 @@
+{
+  "name": "lukyy",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Lukyy Preset Finder — cari preset Alight Motion (5MB & XML) cuma lewat link TikTok. Mesin: amfinder + scanner fallback.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  }
+}
