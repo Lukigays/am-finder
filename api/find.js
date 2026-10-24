@@ -12,6 +12,8 @@
 
 'use strict'
 
+import { scanByTikwm } from '../lib/scanner.js'
+
 const BASE = 'https://amfinder.web.id'
 const UA = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36'
 const HEADERS = {
@@ -22,7 +24,8 @@ const HEADERS = {
 }
 
 async function requestSSE(url) {
-	const response = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(60000) })
+	// Sisakan waktu untuk scanner cadangan sebelum batas function 60 detik.
+	const response = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(28000) })
 	if (!response.ok) throw new Error(`HTTP ${response.status}`)
 	if (!response.body) throw new Error('Response stream tidak tersedia')
 
@@ -111,11 +114,12 @@ async function searchPreset(query) {
 
 /* ========================================================================== */
 /*  Handler Vercel — GET /api/find?url=<link TikTok>  atau  ?q=<kata kunci>   */
-/*  Bagian di bawah ini cuma "pembungkus": manggil fungsi di atas, lalu ngasih */
-/*  JSON ke frontend. Semua logika pencarian tetap 100% kode amfinder di atas. */
+/*  Pencarian URL memakai amfinder, lalu scanner mandiri kalau mesin utama    */
+/*  tidak bisa diakses atau tidak menemukan preset. Response selalu JSON.     */
 /* ========================================================================== */
 
 const LIMIT = 52000 // di bawah maxDuration Vercel (60 detik)
+const BUDGET = 46000 // mesin utama + scanner cadangan
 
 function send(res, code, obj) {
 	try {
@@ -138,6 +142,102 @@ function withPlayableVideo(result) {
 		result.video.srcFrom = 'amfinder → tiktok-cdn (via proxy)'
 	}
 	return result
+}
+
+const hasPresets = result => {
+	const links = Array.isArray(result?.presetLinks) ? result.presetLinks : result?.presets
+	return Array.isArray(links) && links.some(p => p?.url)
+}
+
+// amfinder sekarang bisa menolak request server (mis. HTTP 403). Jangan langsung
+// oper error itu ke pengguna: scan sumber publik sendiri lewat lib/scanner.js.
+// Dependency injection di options dipakai tes regresi tanpa memanggil jaringan.
+async function findWithFallback(url, { primary = amfinder, fallback = scanByTikwm, budgetMs = BUDGET } = {}) {
+	const started = Date.now()
+	let primaryResult = null
+	let reason = 'mesin utama tidak memberi hasil'
+
+	try {
+		primaryResult = await primary(url)
+	} catch (error) {
+		reason = error?.message || reason
+	}
+
+	const primaryOk = primaryResult && primaryResult.status !== false && primaryResult.ok !== false
+	if (primaryOk && hasPresets(primaryResult)) return primaryResult
+	if (primaryOk) reason = 'preset tidak ditemukan di mesin utama'
+	else reason = primaryResult?.message || primaryResult?.error || reason
+
+	const left = Math.max(8000, budgetMs - (Date.now() - started))
+	try {
+		const result = await fallback(url, { budgetMs: left })
+		if (!result || result.ok === false) {
+			throw new Error(result?.message || result?.error || 'scanner tidak memberi hasil')
+		}
+		return { ...result, ok: true, engine: 'scanner', fallbackFrom: reason }
+	} catch (error) {
+		// Kalau mesin utama berhasil tetapi memang kosong, pertahankan hasil validnya
+		// saat scanner cadangan ikut gagal.
+		if (primaryOk) return primaryResult
+		const fallbackReason = String(error?.message || 'error').replace(/\.+$/, '')
+		return { status: false, message: `Mesin utama: ${reason}. Scanner cadangan: ${fallbackReason}.` }
+	}
+}
+
+// Satukan kontrak hasil amfinder (presetLinks/authorDetail) dan scanner mandiri
+// (presets/author) agar keduanya bisa dirender oleh frontend yang sama.
+function formatResult(result, url) {
+	const out = withPlayableVideo({ ...result, video: { ...(result.video || {}) } })
+	const legacyAuthor = result.author && typeof result.author === 'object' ? result.author : {}
+	const authorDetail = result.authorDetail && typeof result.authorDetail === 'object' ? result.authorDetail : {}
+	const a = { ...legacyAuthor, ...authorDetail }
+	const authorName = typeof result.author === 'string' ? result.author.replace(/^@/, '') : ''
+	const rawPresets = Array.isArray(result.presetLinks)
+		? result.presetLinks
+		: Array.isArray(result.presets) ? result.presets : []
+
+	out.ok = true
+	out.engine = result.engine || 'amfinder'
+	out.video = {
+		...out.video,
+		id: result.videoId || out.video.id || '',
+		url: result.videoUrl || out.video.url || url,
+		embed: `https://www.tiktok.com/embed/v2/${result.videoId || out.video.id || ''}`,
+		description: out.video.description || '',
+		cover: out.video.cover || a.avatar || null,
+		stats: out.video.stats || {
+			views: out.video.views ?? 0,
+			likes: out.video.likes ?? 0,
+			comments: out.video.comments ?? 0
+		},
+		src: out.video.src || null,
+		proxy: out.video.proxy || null,
+		srcFrom: out.video.srcFrom || null
+	}
+	out.author = {
+		uniqueId: a.uniqueId || a.username || authorName,
+		nickname: a.nickname || '',
+		avatar: a.avatar || out.video.cover || null,
+		bio: a.bio || '',
+		bioLink: a.bioLink || ''
+	}
+	if (!result.authorDetail) out.authorDetail = out.author
+	out.scanned = result.scanned || { comments: 0, replies: 0 }
+	out.presets = rawPresets.filter(p => p?.url).map(p => ({
+		type: p.type === '5mb' ? '5mb' : 'xml',
+		url: p.url,
+		title: p.title || (p.type === '5mb' ? 'Preset Alight Motion' : 'File preset XML'),
+		thumb: p.thumb || (Array.isArray(p.thumbs) ? p.thumbs[0] : '') || '',
+		size: p.size || '',
+		ratio: p.ratio || '',
+		source: p.source || 'comment',
+		verified: !!p.verified,
+		byAuthor: typeof p.byAuthor === 'boolean' ? p.byAuthor : ['description', 'bio', 'bioLink'].includes(p.source),
+		detail: p.detail || '',
+		pinned: !!p.pinned
+	}))
+	if (!Array.isArray(out.presetLinks)) out.presetLinks = out.presets
+	return out
 }
 
 function findByKeyword(query) {
@@ -205,12 +305,12 @@ export default async function handler(req, res) {
 
 	try {
 		const result = await Promise.race([
-			amfinder(url),
+			findWithFallback(url),
 			new Promise(r => setTimeout(() => r({ __timeout: true }), LIMIT))
 		])
 
 		if (result?.__timeout) {
-			return send(res, 200, { ok: false, error: 'amfinder kelamaan jawab (timeout). Coba lagi ya.' })
+			return send(res, 200, { ok: false, error: 'Server pencarian kelamaan jawab (timeout). Coba lagi ya.' })
 		}
 		if (!result) {
 			return send(res, 200, { ok: false, error: 'amfinder nggak ngasih hasil. Coba lagi sebentar ya.' })
@@ -222,46 +322,10 @@ export default async function handler(req, res) {
 			return send(res, 200, { ok: false, error: result.message || result.error || 'Preset nggak ketemu.' })
 		}
 
-		// hasil amfinder dikirim apa adanya + field tambahan buat frontend
-		const out = withPlayableVideo({ ...result })
-		out.ok = true
-		out.engine = 'amfinder'
-		out.video = {
-			...(result.video || {}),
-			id: result.videoId || result.video?.id || '',
-			url: result.videoUrl || result.video?.url || url,
-			embed: `https://www.tiktok.com/embed/v2/${result.videoId || result.video?.id || ''}`,
-			description: result.video?.description || '',
-			cover: result.video?.cover || result.authorDetail?.avatar || null,
-			stats: result.video?.stats || {},
-			src: result.video?.src || null,
-			proxy: result.video?.proxy || null,
-			srcFrom: result.video?.srcFrom || null
-		}
-		out.author = {
-			uniqueId: result.authorDetail?.uniqueId || String(result.author || '').replace(/^@/, ''),
-			nickname: result.authorDetail?.nickname || '',
-			avatar: result.authorDetail?.avatar || out.video.cover || null,
-			bio: result.authorDetail?.bio || '',
-			bioLink: result.authorDetail?.bioLink || ''
-		}
-		out.scanned = result.scanned || { comments: 0, replies: 0 }
-		out.presets = (result.presetLinks || []).map(p => ({
-			type: p.type === '5mb' ? '5mb' : 'xml',
-			url: p.url,
-			title: p.title || (p.type === '5mb' ? 'Preset Alight Motion' : 'File preset XML'),
-			thumb: p.thumb || (Array.isArray(p.thumbs) ? p.thumbs[0] : '') || '',
-			size: p.size || '',
-			ratio: p.ratio || '',
-			source: p.source || 'comment',
-			verified: !!p.verified,
-			byAuthor: ['description', 'bio', 'bioLink'].includes(p.source)
-		}))
-
-		return send(res, 200, out)
+		return send(res, 200, formatResult(result, url))
 	} catch (e) {
 		return send(res, 200, { ok: false, error: 'Gagal nyambung ke amfinder: ' + (e?.message || 'error') })
 	}
 }
 
-export { amfinder, searchPreset, requestSSE, getFinalResult }
+export { amfinder, searchPreset, requestSSE, getFinalResult, findWithFallback, formatResult }
